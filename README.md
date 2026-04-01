@@ -461,3 +461,152 @@ If there's one takeaway this has, it's that security is hard. But `.npmignore` i
 ---
 
 A writeup by [Kuber Mehta](https://kuber.studio/)
+
+---
+
+## 开发者指南
+
+> 以下内容为本仓库的构建、配置与运行指南，基于对泄露源码的逆向工程整理。
+
+### 环境要求
+
+| 工具 | 版本 |
+|------|------|
+| [Bun](https://bun.sh) | >= 1.3.0 |
+| macOS / Linux | - |
+
+安装 Bun：
+
+```bash
+# macOS (Homebrew)
+HOMEBREW_NO_AUTO_UPDATE=1 brew install oven-sh/bun/bun
+
+# 或官方脚本
+curl -fsSL https://bun.sh/install | bash
+```
+
+---
+
+### 安装依赖
+
+```bash
+bun install
+```
+
+> 安装完成后会输出类似 `578 packages installed`。
+
+---
+
+### 构建
+
+以 `entrypoints/cli.tsx` 为入口进行构建（`main.tsx` 仅导出，不调用入口）：
+
+```bash
+bun build ./entrypoints/cli.tsx --outdir ./dist --outfile cli.js --target bun \
+  --define "MACRO.VERSION=\"1.0.0\"" \
+  --define "MACRO.BUILD_TIME=\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"" \
+  --define "MACRO.FEEDBACK_CHANNEL=\"https://github.com\"" \
+  --define "MACRO.ISSUES_EXPLAINER=\"https://github.com\"" \
+  --define "MACRO.PACKAGE_URL=\"https://npmjs.com\"" \
+  --define "MACRO.NATIVE_PACKAGE_URL=\"https://npmjs.com\"" \
+  --define "MACRO.VERSION_CHANGELOG=\"\""
+```
+
+构建产物输出至 `dist/cli.js`（约 26 MB）。
+
+> **注意**：所有 `MACRO.*` 宏必须在构建时通过 `--define` 注入，否则运行时会因 `MACRO is not defined` 静默退出。
+
+---
+
+### 配置
+
+程序通过以下方式读取 API 密钥和模型配置（优先级从高到低）：
+
+#### 方式一：`~/.claude/settings.json`（推荐）
+
+```json
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "sk-ant-xxxxxxx",
+    "ANTHROPIC_BASE_URL": "https://api.anthropic.com",
+    "ANTHROPIC_MODEL": "claude-sonnet-4-5"
+  }
+}
+```
+
+使用阿里云 DashScope 兼容接口示例：
+
+```json
+{
+  "env": {
+    "ANTHROPIC_AUTH_TOKEN": "sk-sp-xxxxxxx",
+    "ANTHROPIC_BASE_URL": "https://coding.dashscope.aliyuncs.com/apps/anthropic",
+    "ANTHROPIC_MODEL": "qwen3.5-plus"
+  }
+}
+```
+
+> **使用 qwen 等非 Anthropic 模型时的额外配置**
+>
+> 程序首次启动会触发 onboarding 流程，该流程会尝试调用 Anthropic 官方接口检测账号状态，在使用第三方模型时可能导致卡住或报错。
+> 需在 `~/.claude.json` 中添加以下字段跳过引导：
+>
+> ```json
+> {
+>   "hasCompletedOnboarding": true
+> }
+> ```
+>
+> 若 `~/.claude.json` 已存在其他配置，追加该字段即可，不要覆盖整个文件。
+
+#### 方式二：环境变量（临时使用）
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="sk-ant-xxxxxxx"
+export ANTHROPIC_BASE_URL="https://api.anthropic.com"
+export ANTHROPIC_MODEL="claude-sonnet-4-5"
+```
+
+---
+
+### 运行
+
+```bash
+# 交互式 REPL 模式（需要真实 TTY 终端）
+bun dist/cli.js
+
+# 非交互式打印模式（适合管道/脚本调用）
+bun dist/cli.js -p "你的问题"
+
+# 查看版本
+bun dist/cli.js --version
+
+# 查看帮助
+bun dist/cli.js --help
+```
+
+---
+
+### 常见问题
+
+**Q: 运行后无任何输出，exit 0**
+
+原因：使用了 `dist/main.js` 而非 `dist/cli.js`。`main.tsx` 仅导出 `main` 函数，未调用，正确入口是 `entrypoints/cli.tsx`。
+
+**Q: `TypeError: new Command().configureHelp is not a function`**
+
+原因：`@commander-js/extra-typings` 内嵌了旧版 commander 2.x。修复方式：
+
+```bash
+cp -r node_modules/commander/. node_modules/@commander-js/extra-typings/node_modules/commander/
+```
+
+然后重新构建。
+
+**Q: 构建时报 `Cannot find module 'react/compiler-runtime'`**
+
+原因：`react/compiler-runtime` 需要通过 `node_modules/react/compiler-runtime/` 子目录桥接到 `react-compiler-runtime`。运行 `bun install` 后此目录应已自动创建；若未创建，参考源码中的手动创建步骤。
+
+**Q: 构建时报缺少内部模块（如 `TungstenTool`、`REPLTool` 等）**
+
+这些是 Anthropic 内部 ant-only 工具，源码中通过 Feature Flag 控制，编译时已被 DCE（死代码消除）排除。若报错，需在对应路径创建空 stub 文件。
